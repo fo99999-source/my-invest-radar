@@ -49,7 +49,7 @@ DEFAULT_CONFIG = {
     "c320": 600,      # 2834.HK
     "c274": 77600,    # 7266.HK
     "c_tqqq": 0,      
-    "c_cash": 3400000.0 # 已更新
+    "c_cash": 3250000.0 # 已更新
 }
 
 if 'saved_data' not in st.session_state:
