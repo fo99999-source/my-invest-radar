@@ -143,7 +143,7 @@ st.info(f"📊 **当前应用汇率**: USD/CNY = **{final_fx['USD']:.4f}** | HKD
 # 指标看板
 m1, m2, m3 = st.columns(3)
 m1.metric("总资产 (CNY)", f"¥{total_assets:,.2f}")
-m2.metric("当前实时 Beta", f"{curr_beta:.3f}")
+m2.metric("当前实时 Beta", f"{curr_beta:.2f}")
 m3.metric("曝险比例", f"{(mkt_val_total/total_assets*100):.1f}%")
 
 st.markdown("---")
