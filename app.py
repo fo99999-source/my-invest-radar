@@ -2,81 +2,89 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import requests
+import json
+import os
 import time
 
-# 1. 页面配置
+# 1. 配置文件路径（储存在当前目录下）
+DB_FILE = "portfolio_data.json"
+
+# 2. 页面配置
 st.set_page_config(page_title="Beta Radar Pro", page_icon="📈", layout="wide")
 
 # ==========================================
-# 2. 数据获取引擎
+# 3. 存储功能函数
+# ==========================================
+def load_data():
+    """从本地文件加载数据"""
+    # 初始默认数据
+    default = {
+        "holdings": {
+            "c124": 1174300, "c216": 21600, "c320": 600, "c274": 77600, "c_tqqq": 0, "c_cash": 3400000.0
+        },
+        "fx": {"USD": 6.28, "HKD": 0.87}
+    }
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return default
+    return default
+
+def save_data(holdings, fx):
+    """保存数据到本地文件"""
+    data = {"holdings": holdings, "fx": fx}
+    with open(DB_FILE, "w") as f:
+        json.dump(data, f)
+
+# ==========================================
+# 4. 数据获取引擎
 # ==========================================
 @st.cache_data(ttl=60)
 def get_live_market_data(config):
-    # 【已更新】默认兜底汇率
+    # 默认贴底汇率
     fx = {"USD": 6.28, "HKD": 0.87, "CNY": 1.0}
     prices = {}
-    
-    # A. 尝试从 Yahoo Finance 同步实时汇率
     try:
         usd_info = yf.Ticker("USDCNY=X").fast_info
         if 'last_price' in usd_info: fx["USD"] = usd_info['last_price']
         hkd_info = yf.Ticker("HKDCNY=X").fast_info
         if 'last_price' in hkd_info: fx["HKD"] = hkd_info['last_price']
-    except:
-        pass
+    except: pass
 
-    # B. 抓取股价
     for ticker, info in config.items():
         p = 0.0
-        # 1. A 股优先使用新浪财经
         if ticker.endswith(".SS"):
             try:
                 code = ticker.replace(".SS", "").lower()
-                symbol = f"sh{code}"
-                resp = requests.get(f"http://hq.sinajs.cn/list={symbol}", timeout=2, headers={'Referer': 'http://finance.sina.com.cn'}).text
+                resp = requests.get(f"http://hq.sinajs.cn/list=sh{code}", timeout=2, headers={'Referer': 'http://finance.sina.com.cn'}).text
                 data = resp.split('"')[1].split(',')
                 if len(data) > 3: p = float(data[3])
             except: pass
-            
-        # 2. 港美股或 A 股失败时使用 Yahoo
         if p == 0:
             try:
                 p = yf.Ticker(ticker).fast_info.get('last_price', 0.0)
-                if p == 0:
-                    p = yf.Ticker(ticker).history(period="1d")['Close'].iloc[-1]
-            except:
-                p = 1.0
+                if p == 0: p = yf.Ticker(ticker).history(period="1d")['Close'].iloc[-1]
+            except: p = 1.0
         prices[ticker] = p
-        
     return fx, prices
 
 # ==========================================
-# 3. 持仓与汇率状态初始化
+# 5. 初始化状态 (优先读取本地文件)
 # ==========================================
-DEFAULT_CONFIG = {
-    "c124": 1174300,    # 513100.SS
-    "c216": 21600,      # 513300.SS
-    "c320": 600,        # 2834.HK
-    "c274": 77600,      # 7266.HK
-    "c_tqqq": 0,        
-    "c_cash": 3400000.0 
-}
-
-# 预加载实时数据用于初始化侧边栏
-initial_fx, _ = get_live_market_data({})
+persisted_data = load_data()
 
 if 'saved_data' not in st.session_state:
-    st.session_state.saved_data = DEFAULT_CONFIG.copy()
-    # 初始手动汇率默认为实时抓取值
-    st.session_state.manual_fx = {"USD": initial_fx["USD"], "HKD": initial_fx["HKD"]}
+    st.session_state.saved_data = persisted_data["holdings"]
+    st.session_state.manual_fx = persisted_data["fx"]
 
 # ==========================================
-# 4. 侧边栏：持仓与汇率手动控制
+# 6. 侧边栏
 # ==========================================
 with st.sidebar:
-    st.header("⚙️ 持仓与汇率配置")
+    st.header("⚙️ 配置管理")
     
-    # --- 持仓部分 ---
     st.subheader("📦 持仓数量")
     input_c124 = st.number_input("513100.SS", value=st.session_state.saved_data["c124"])
     input_c216 = st.number_input("513300.SS", value=st.session_state.saved_data["c216"])
@@ -86,20 +94,24 @@ with st.sidebar:
     input_c_cash = st.number_input("现金储备 (CNY)", value=st.session_state.saved_data["c_cash"], step=10000.0)
     
     st.markdown("---")
-    
-    # --- 汇率手动调整部分 ---
-    st.subheader("💱 汇率手动干预")
-    st.caption("默认显示实时值，修改并保存后将锁定汇率")
+    st.subheader("💱 汇率干预")
     input_fx_usd = st.number_input("USD/CNY 覆盖", value=st.session_state.manual_fx["USD"], format="%.4f")
     input_fx_hkd = st.number_input("HKD/CNY 覆盖", value=st.session_state.manual_fx["HKD"], format="%.4f")
     
-    if st.button("💾 保存所有修改", use_container_width=True, type="primary"):
-        st.session_state.saved_data.update({
+    if st.button("💾 永久保存到本地", use_container_width=True, type="primary"):
+        new_holdings = {
             "c124": input_c124, "c216": input_c216, "c320": input_c320,
             "c274": input_c274, "c_tqqq": input_c_tqqq, "c_cash": input_c_cash
-        })
-        st.session_state.manual_fx = {"USD": input_fx_usd, "HKD": input_fx_hkd}
-        st.success("配置已保存！")
+        }
+        new_fx = {"USD": input_fx_usd, "HKD": input_fx_hkd}
+        
+        # 写入文件
+        save_data(new_holdings, new_fx)
+        # 更新当前 Session
+        st.session_state.saved_data = new_holdings
+        st.session_state.manual_fx = new_fx
+        
+        st.success("数据已写入本地文件，下次打开将自动加载！")
         time.sleep(0.5)
         st.rerun()
 
@@ -112,13 +124,11 @@ holdings_map = {
     "TQQQ":      {"name": "三倍纳指(美)",    "qty": st.session_state.saved_data["c_tqqq"], "lev": 3.0, "cur": "USD"}
 }
 
-# 获取实时价格
 _, live_prices = get_live_market_data(holdings_map)
-# 汇率使用手动覆盖值（默认为实时抓取，除非您在侧边栏修改）
 final_fx = {"USD": st.session_state.manual_fx["USD"], "HKD": st.session_state.manual_fx["HKD"], "CNY": 1.0}
 
 # ==========================================
-# 5. 计算逻辑
+# 7. 计算与 UI
 # ==========================================
 lev_sums = {1.0: 0.0, 2.0: 0.0, 3.0: 0.0}
 for t, h in holdings_map.items():
@@ -129,10 +139,7 @@ total_mkt_val = sum(lev_sums.values())
 total_assets = total_mkt_val + st.session_state.saved_data["c_cash"]
 curr_beta = sum(live_prices[t] * h['qty'] * final_fx[h['cur']] * h['lev'] for t, h in holdings_map.items()) / total_assets if total_assets > 0 else 0
 
-# ==========================================
-# 6. UI 展现
-# ==========================================
-st.title("🛡️ 纳指平衡监控终端")
+st.title("🛡️ 纳指平衡监控终端 (持久化版)")
 st.info(f"📊 **当前应用汇率**: USD/CNY = **{final_fx['USD']:.4f}** | HKD/CNY = **{final_fx['HKD']:.4f}**")
 
 m1, m2, m3 = st.columns(3)
@@ -141,7 +148,6 @@ m2.metric("当前实时 Beta", f"{curr_beta:.3f}")
 m3.metric("整体现金占比", f"{(st.session_state.saved_data['c_cash']/total_assets*100):.2f}%")
 
 st.markdown("---")
-st.subheader("📋 持仓详情 (基于当前汇率)")
 df_list = []
 for t, h in holdings_map.items():
     v_cny = live_prices[t] * h['qty'] * final_fx[h['cur']]
@@ -152,7 +158,7 @@ for t, h in holdings_map.items():
     })
 st.table(pd.DataFrame(df_list))
 
-st.markdown("---")
+# 调仓助手
 st.subheader("🎯 调仓助手")
 t_col1, t_col2 = st.columns(2)
 with t_col1:
@@ -161,17 +167,15 @@ with t_col2:
     selected_adj = st.selectbox("选择调仓标的", [h['name'] for h in holdings_map.values()], index=3)
 
 adj_t = next(k for k, v in holdings_map.items() if v['name'] == selected_adj)
-h_info = holdings_map[adj_t]
-price_cny = live_prices[adj_t] * final_fx[h_info['cur']]
+price_cny = live_prices[adj_t] * final_fx[holdings_map[adj_t]['cur']]
 
 if price_cny > 0:
     gap_beta = target_b - curr_beta
-    needed_cny = gap_beta * total_assets / h_info['lev']
+    needed_cny = gap_beta * total_assets / holdings_map[adj_t]['lev']
     shares = round(needed_cny / price_cny)
-    
     if shares != 0:
         action = "买入" if shares > 0 else "卖出"
-        st.markdown(f"### 📢 建议指令：{action} **{abs(shares):,}** 股 {selected_adj}")
-        st.markdown(f"#### 💵 对应金额: <span style='color:#ff4b4b'>¥{abs(shares * price_cny):,.2f} CNY</span>", unsafe_allow_html=True)
+        st.markdown(f"### 📢 指令：{action} **{abs(shares):,}** 股 {selected_adj}")
+        st.markdown(f"#### 预估金额: ¥{abs(shares * price_cny):,.2f} CNY")
 
-st.caption(f"数据源: 混合接口 | 默认兜底: 美元6.28, 港币0.87 | 更新时间: {time.strftime('%H:%M:%S')}")
+st.caption(f"本地存储已激活 | 数据文件: {DB_FILE} | 更新时间: {time.strftime('%H:%M:%S')}")
