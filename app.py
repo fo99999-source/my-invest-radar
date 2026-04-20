@@ -6,18 +6,17 @@ import json
 import os
 import time
 
-# 1. 配置文件路径（储存在当前目录下）
+# 1. 配置文件路径
 DB_FILE = "portfolio_data.json"
 
 # 2. 页面配置
-st.set_page_config(page_title="Beta Radar Pro", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Beta Radar Pro", page_icon="🛡️", layout="wide")
 
 # ==========================================
 # 3. 存储功能函数
 # ==========================================
 def load_data():
-    """从本地文件加载数据"""
-    # 初始默认数据
+    """从本地/云端 JSON 文件加载数据"""
     default = {
         "holdings": {
             "c124": 1174300, "c216": 21600, "c320": 600, "c274": 77600, "c_tqqq": 0, "c_cash": 3400000.0
@@ -33,7 +32,7 @@ def load_data():
     return default
 
 def save_data(holdings, fx):
-    """保存数据到本地文件"""
+    """保存数据"""
     data = {"holdings": holdings, "fx": fx}
     with open(DB_FILE, "w") as f:
         json.dump(data, f)
@@ -58,6 +57,7 @@ def get_live_market_data(config):
         if ticker.endswith(".SS"):
             try:
                 code = ticker.replace(".SS", "").lower()
+                # 使用新浪财经 A 股实时接口
                 resp = requests.get(f"http://hq.sinajs.cn/list=sh{code}", timeout=2, headers={'Referer': 'http://finance.sina.com.cn'}).text
                 data = resp.split('"')[1].split(',')
                 if len(data) > 3: p = float(data[3])
@@ -71,7 +71,7 @@ def get_live_market_data(config):
     return fx, prices
 
 # ==========================================
-# 5. 初始化状态 (优先读取本地文件)
+# 5. 初始化状态
 # ==========================================
 persisted_data = load_data()
 
@@ -98,20 +98,16 @@ with st.sidebar:
     input_fx_usd = st.number_input("USD/CNY 覆盖", value=st.session_state.manual_fx["USD"], format="%.4f")
     input_fx_hkd = st.number_input("HKD/CNY 覆盖", value=st.session_state.manual_fx["HKD"], format="%.4f")
     
-    if st.button("💾 永久保存到本地", use_container_width=True, type="primary"):
+    if st.button("💾 永久保存修改", use_container_width=True, type="primary"):
         new_holdings = {
             "c124": input_c124, "c216": input_c216, "c320": input_c320,
             "c274": input_c274, "c_tqqq": input_c_tqqq, "c_cash": input_c_cash
         }
         new_fx = {"USD": input_fx_usd, "HKD": input_fx_hkd}
-        
-        # 写入文件
         save_data(new_holdings, new_fx)
-        # 更新当前 Session
         st.session_state.saved_data = new_holdings
         st.session_state.manual_fx = new_fx
-        
-        st.success("数据已写入本地文件，下次打开将自动加载！")
+        st.success("数据已同步至云端/本地文件！")
         time.sleep(0.5)
         st.rerun()
 
@@ -128,54 +124,77 @@ _, live_prices = get_live_market_data(holdings_map)
 final_fx = {"USD": st.session_state.manual_fx["USD"], "HKD": st.session_state.manual_fx["HKD"], "CNY": 1.0}
 
 # ==========================================
-# 7. 计算与 UI
+# 7. 核心计算逻辑 (计算四大比例)
 # ==========================================
 lev_sums = {1.0: 0.0, 2.0: 0.0, 3.0: 0.0}
 for t, h in holdings_map.items():
     val_cny = live_prices[t] * h['qty'] * final_fx[h['cur']]
     lev_sums[h['lev']] += val_cny
 
-total_mkt_val = sum(lev_sums.values())
-total_assets = total_mkt_val + st.session_state.saved_data["c_cash"]
+mkt_val_total = sum(lev_sums.values())
+cash_val = st.session_state.saved_data["c_cash"]
+total_assets = mkt_val_total + cash_val
+
+# 计算整体 Beta
 curr_beta = sum(live_prices[t] * h['qty'] * final_fx[h['cur']] * h['lev'] for t, h in holdings_map.items()) / total_assets if total_assets > 0 else 0
 
-st.title("🛡️ 纳指平衡监控终端 (持久化版)")
+# ==========================================
+# 8. UI 界面布局
+# ==========================================
+st.title("🛡️ 纳指平衡监控终端")
 st.info(f"📊 **当前应用汇率**: USD/CNY = **{final_fx['USD']:.4f}** | HKD/CNY = **{final_fx['HKD']:.4f}**")
 
+# 指标顶栏
 m1, m2, m3 = st.columns(3)
 m1.metric("总资产 (CNY)", f"¥{total_assets:,.2f}")
 m2.metric("当前实时 Beta", f"{curr_beta:.3f}")
-m3.metric("整体现金占比", f"{(st.session_state.saved_data['c_cash']/total_assets*100):.2f}%")
+m3.metric("总市值/总资产", f"{(mkt_val_total/total_assets*100):.1f}%")
 
 st.markdown("---")
+
+# 重点：四大比例展示区
+st.subheader("📊 杠杆与现金分布 (核心比例)")
+p1, p2, p3, p4 = st.columns(4)
+p1.write(f"🟢 **一倍资产**\n\n**{(lev_sums[1.0]/total_assets*100):.2f}%**")
+p2.write(f"🟡 **二倍资产**\n\n**{(lev_sums[2.0]/total_assets*100):.2f}%**")
+p3.write(f"🔴 **三倍资产**\n\n**{(lev_sums[3.0]/total_assets*100):.2f}%**")
+p4.write(f"💰 **现金部位**\n\n**{(cash_val/total_assets*100):.2f}%**")
+
+# 持仓明细
+st.markdown("---")
+st.subheader("📋 持仓详情明细")
 df_list = []
 for t, h in holdings_map.items():
     v_cny = live_prices[t] * h['qty'] * final_fx[h['cur']]
     df_list.append({
-        "名称": h['name'], "持仓": f"{h['qty']:,}",
-        "单价": f"{live_prices[t]:.3f}", "市值(CNY)": f"{v_cny:,.0f}",
-        "权重": f"{(v_cny/total_assets*100):.2f}%", "杠杆": f"{h['lev']}x"
+        "名称": h['name'], 
+        "持仓": f"{h['qty']:,}",
+        "实时单价": f"{live_prices[t]:.3f}", 
+        "市值(CNY)": f"{v_cny:,.0f}",
+        "资产占比": f"{(v_cny/total_assets*100):.2f}%", 
+        "杠杆倍数": f"{h['lev']}x"
     })
 st.table(pd.DataFrame(df_list))
 
 # 调仓助手
+st.markdown("---")
 st.subheader("🎯 调仓助手")
 t_col1, t_col2 = st.columns(2)
 with t_col1:
-    target_b = st.slider("设定理想 Beta 目标", 0.0, 1.5, 0.9, 0.01)
+    target_b = st.slider("设定 Beta 目标", 0.0, 1.5, 0.9, 0.01)
 with t_col2:
     selected_adj = st.selectbox("选择调仓标的", [h['name'] for h in holdings_map.values()], index=3)
 
 adj_t = next(k for k, v in holdings_map.items() if v['name'] == selected_adj)
-price_cny = live_prices[adj_t] * final_fx[holdings_map[adj_t]['cur']]
+price_cny_adj = live_prices[adj_t] * final_fx[holdings_map[adj_t]['cur']]
 
-if price_cny > 0:
+if price_cny_adj > 0:
     gap_beta = target_b - curr_beta
     needed_cny = gap_beta * total_assets / holdings_map[adj_t]['lev']
-    shares = round(needed_cny / price_cny)
+    shares = round(needed_cny / price_cny_adj)
     if shares != 0:
         action = "买入" if shares > 0 else "卖出"
         st.markdown(f"### 📢 指令：{action} **{abs(shares):,}** 股 {selected_adj}")
-        st.markdown(f"#### 预估金额: ¥{abs(shares * price_cny):,.2f} CNY")
+        st.markdown(f"#### 预估金额: ¥{abs(shares * price_cny_adj):,.2f} CNY")
 
-st.caption(f"本地存储已激活 | 数据文件: {DB_FILE} | 更新时间: {time.strftime('%H:%M:%S')}")
+st.caption(f"持久化文件: {DB_FILE} | 数据源: 混合接口 | 当前时间: {time.strftime('%H:%M:%S')}")
