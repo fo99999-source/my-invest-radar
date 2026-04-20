@@ -8,17 +8,17 @@ import time
 st.set_page_config(page_title="Beta Radar Pro", page_icon="📈", layout="wide")
 
 # ==========================================
-# 2. 持仓数据初始化 (已根据要求更新)
+# 2. 持仓数据初始化 (已更新初始值)
 # ==========================================
 DEFAULT_CONFIG = {
     "c124": 1174300,  # 513100.SS
     "c216": 21600,    # 513300.SS
     "c320": 600,      # 2834.HK
-    "c274": 39000,    # 7266.HK
+    "c274": 77600,    # 7266.HK
     "c_tqqq": 0,      # TQQQ
-    "c_cash": 4550000.0,
-    "fx_usd": 7.24,   # 初始参考，运行后会抓取实时
-    "fx_hkd": 0.925   # 初始参考，运行后会抓取实时
+    "c_cash": 3400000.0,
+    "fx_usd": 7.24,   
+    "fx_hkd": 0.925   
 }
 
 if 'saved_data' not in st.session_state:
@@ -57,7 +57,7 @@ with st.sidebar:
         st.session_state.saved_data = DEFAULT_CONFIG.copy()
         st.rerun()
 
-# 获取当前配置
+# 核心配置
 conf = st.session_state.saved_data
 holdings_map = {
     "513100.SS": {"name": "纳指100ETF(A)", "qty": conf["c124"], "lev": 1.0, "cur": "CNY", "tx": "sh513100"},
@@ -68,23 +68,11 @@ holdings_map = {
 }
 
 # ==========================================
-# 4. 实时数据抓取逻辑 (包含汇率实时化)
+# 4. 实时数据抓取
 # ==========================================
 @st.cache_data(ttl=300)
-def fetch_live_market_data(config):
+def fetch_live_data(config):
     prices = {}
-    current_fx = {"USD": conf["fx_usd"], "HKD": conf["fx_hkd"]}
-    
-    # 1. 尝试抓取实时汇率
-    try:
-        r_usd = requests.get("http://qt.gtimg.cn/q=usdcny", timeout=2).text.split('~')
-        if len(r_usd) > 3: current_fx["USD"] = float(r_usd[3])
-        r_hkd = requests.get("http://qt.gtimg.cn/q=hkdcny", timeout=2).text.split('~')
-        if len(r_hkd) > 3: current_fx["HKD"] = float(r_hkd[3])
-    except:
-        pass
-
-    # 2. 抓取股票/ETF价格
     for ticker, info in config.items():
         p = 0.0
         try:
@@ -95,46 +83,60 @@ def fetch_live_market_data(config):
             try: p = yf.Ticker(ticker).fast_info.get('last_price', 0.0)
             except: p = 1.0
         prices[ticker] = p
-    return current_fx, prices
+    return prices
 
-# 执行实时抓取
-fetched_fx, live_prices = fetch_live_market_data(holdings_map)
-
-# 最终汇率决策：如果用户在侧边栏手动改了汇率且保存了，就用用户的；否则用实时抓取的。
-# 这里逻辑设定为：手动保存的值具有最高优先级
+live_prices = fetch_live_data(holdings_map)
 fx_final = {"USD": conf["fx_usd"], "HKD": conf["fx_hkd"], "CNY": 1.0}
 
 # ==========================================
-# 5. 计算显示区
+# 5. 计算逻辑
 # ==========================================
-total_mkt_val = sum(live_prices[t] * h['qty'] * fx_final[h['cur']] for t, h in holdings_map.items())
+# 统计不同杠杆倍数的市值
+lev_sums = {1.0: 0.0, 2.0: 0.0, 3.0: 0.0}
+for t, h in holdings_map.items():
+    v_cny = live_prices[t] * h['qty'] * fx_final[h['cur']]
+    lev_sums[h['lev']] += v_cny
+
+total_mkt_val = sum(lev_sums.values())
 total_assets = total_mkt_val + conf["c_cash"]
 curr_beta = sum(live_prices[t] * h['qty'] * fx_final[h['cur']] * h['lev'] for t, h in holdings_map.items()) / total_assets if total_assets > 0 else 0
 
+# ==========================================
+# 6. UI 展现
+# ==========================================
 st.title("🛡️ 纳指平衡监控终端")
 st.success(f"💹 **当前计算汇率**: USD/CNY = **{fx_final['USD']:.4f}** | HKD/CNY = **{fx_final['HKD']:.4f}**")
 
+# 第一行：核心宏观指标
 m1, m2, m3 = st.columns(3)
 m1.metric("总资产 (CNY)", f"¥{total_assets:,.2f}")
-m2.metric("当前 Beta", f"{curr_beta:.3f}")
-m3.metric("现金占比", f"{(conf['c_cash']/total_assets*100):.2f}%")
+m2.metric("当前实时 Beta", f"{curr_beta:.3f}")
+m3.metric("整体现金占比", f"{(conf['c_cash']/total_assets*100):.2f}%")
 
-# 持仓详情
+# 第二行：杠杆比例分布 (新增)
+st.markdown("---")
+st.subheader("📊 资产结构占比 (含现金)")
+p1, p2, p3, p4 = st.columns(4)
+p1.write(f"🟢 **1倍资产**: {(lev_sums[1.0]/total_assets*100):.1f}%")
+p2.write(f"🟡 **2倍资产**: {(lev_sums[2.0]/total_assets*100):.1f}%")
+p3.write(f"🔴 **3倍资产**: {(lev_sums[3.0]/total_assets*100):.1f}%")
+p4.write(f"💰 **纯现金位**: {(conf['c_cash']/total_assets*100):.1f}%")
+
+# 第三行：详细持仓表
+st.subheader("📋 持仓详情")
 df_list = []
 for t, h in holdings_map.items():
     v_cny = live_prices[t] * h['qty'] * fx_final[h['cur']]
     df_list.append({
         "名称": h['name'], "代码": t, "持仓": f"{h['qty']:,}",
-        "价格": f"{live_prices[t]:.3f}", "市值(CNY)": f"{v_cny:,.0f}",
+        "单价": f"{live_prices[t]:.3f}", "市值(CNY)": f"{v_cny:,.0f}",
         "占比": f"{(v_cny/total_assets*100):.2f}%", "杠杆": f"{h['lev']}x"
     })
 st.table(pd.DataFrame(df_list))
 
-# ==========================================
-# 6. 调仓助手 (人民币金额高亮显示)
-# ==========================================
+# 第四行：调仓助手
 st.markdown("---")
-st.subheader("🎯 调仓助手")
+st.subheader("🎯 调仓模拟器")
 t_col1, t_col2 = st.columns(2)
 with t_col1:
     target_b = st.slider("设定理想 Beta 目标", 0.0, 1.5, 0.9, 0.01)
@@ -150,16 +152,13 @@ if price_cny > 0:
     gap_beta = target_b - curr_beta
     needed_cny = gap_beta * total_assets / h_info['lev']
     shares = round(needed_cny / price_cny)
-    actual_cost_native = abs(shares * price_native)
     actual_cost_cny = abs(shares * price_cny)
     
     if shares != 0:
         action = "买入" if shares > 0 else "卖出"
         st.markdown(f"### 📢 建议指令：{action} **{abs(shares):,}** 股 {selected_adj}")
         st.markdown(f"#### 💵 对应人民币金额: <span style='color:#ff4b4b'>¥{actual_cost_cny:,.2f} CNY</span>", unsafe_allow_html=True)
-        if h_info['cur'] != "CNY":
-            st.write(f"原始币种预估: {actual_cost_native:,.2f} {h_info['cur']}")
     else:
-        st.success("✅ 当前 Beta 符合目标。")
+        st.success("✅ 当前 Beta 已达标。")
 
-st.caption(f"最后更新时间: {time.strftime('%H:%M:%S')}")
+st.caption(f"数据更新时间: {time.strftime('%H:%M:%S')}")
