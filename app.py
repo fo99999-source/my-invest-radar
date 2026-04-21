@@ -4,6 +4,8 @@ import pandas as pd
 import requests
 import json
 import os
+import time
+import plotly.graph_objects as go
 from datetime import datetime, timedelta, timezone
 
 # 1. 配置文件路径
@@ -52,15 +54,14 @@ def get_live_market_data(config, manual_fx):
     prices = {}
     header = {'Referer': 'http://finance.sina.com.cn'}
     
+    # 尝试抓取汇率
     try:
         resp_u = requests.get("http://hq.sinajs.cn/list=fx_susdcny", timeout=2, headers=header).text
         data_u = resp_u.split('"')[1].split(',')
         if len(data_u) > 1: 
             fx["USD"] = float(data_u[1])
             status["USD"] = "实时"
-    except: pass
         
-    try:
         resp_h = requests.get("http://hq.sinajs.cn/list=fx_shkdcny", timeout=2, headers=header).text
         data_h = resp_h.split('"')[1].split(',')
         if len(data_h) > 1: 
@@ -68,6 +69,7 @@ def get_live_market_data(config, manual_fx):
             status["HKD"] = "实时"
     except: pass 
 
+    # 抓取股价
     for ticker, info in config.items():
         p = 0.0
         if ticker.endswith(".SS"):
@@ -94,7 +96,7 @@ if 'saved_data' not in st.session_state:
     st.session_state.manual_fx = persisted_data["fx"]
 
 # ==========================================
-# 7. 侧边栏
+# 7. 侧边栏：配置管理
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 配置管理")
@@ -138,7 +140,7 @@ holdings_map = {
 final_fx, fx_status, live_prices = get_live_market_data(holdings_map, st.session_state.manual_fx)
 
 # ==========================================
-# 8. 计算逻辑
+# 8. 实时计算
 # ==========================================
 lev_sums = {1.0: 0.0, 2.0: 0.0, 3.0: 0.0}
 for t, h in holdings_map.items():
@@ -166,20 +168,53 @@ st.markdown(f"""
 > HKD/CNY: **{final_fx['HKD']:.4f}** <span style='color:{h_color}'>({fx_status['HKD']})</span>
 """, unsafe_allow_html=True)
 
-# 指标看板：增加了实时市值和曝险比例整数化
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("总资产 (CNY)", f"¥{total_assets:,.0f}")
 m2.metric("当前实时 Beta", f"{curr_beta:.2f}")
 m3.metric("曝险实时市值", f"¥{mkt_val_total:,.0f}")
 m4.metric("曝险比例", f"{int(mkt_val_total/total_assets*100)}%")
 
+# ==========================================
+# 10. 历史回测波动图 (2025-01-01 至今)
+# ==========================================
 st.markdown("---")
-st.subheader("📊 杠杆与现金分布")
-p1, p2, p3, p4 = st.columns(4)
-p1.write(f"🟢 **一倍资产**\n\n**{(lev_sums[1.0]/total_assets*100):.2f}%**")
-p2.write(f"🟡 **二倍资产**\n\n**{(lev_sums[2.0]/total_assets*100):.2f}%**")
-p3.write(f"🔴 **三倍资产**\n\n**{(lev_sums[3.0]/total_assets*100):.2f}%**")
-p4.write(f"💰 **现金部位**\n\n**{(cash_val/total_assets*100):.2f}%**")
+st.subheader("📈 资产历史波动回测")
+
+@st.cache_data(ttl=3600)
+def get_backtest_data(holdings):
+    start_date = "2025-01-01"
+    tk_list = ["513100.SS", "513300.SS", "2834.HK", "7266.HK", "TQQQ", "USDCNY=X", "HKDCNY=X"]
+    # 抓取历史数据
+    hist = yf.download(tk_list, start=start_date)['Close'].ffill()
+    
+    def calc_assets(row):
+        total = holdings["c_cash"]
+        total += row["513100.SS"] * holdings["c124"]
+        total += row["513300.SS"] * holdings["c216"]
+        total += row["2834.HK"] * holdings["c320"] * row["HKDCNY=X"]
+        total += row["7266.HK"] * holdings["c274"] * row["HKDCNY=X"]
+        total += row["TQQQ"] * holdings["c_tqqq"] * row["USDCNY=X"]
+        return total
+
+    daily_total = hist.apply(calc_assets, axis=1)
+    return daily_total
+
+try:
+    history_series = get_backtest_data(st.session_state.saved_data)
+    h_max, h_min = history_series.max(), history_series.min()
+    d_max, d_min = history_series.idxmax(), history_series.idxmin()
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=history_series.index, y=history_series, name="总资产", line=dict(color='#00ffcc', width=2)))
+    
+    # 标注最高最低
+    fig.add_annotation(x=d_max, y=h_max, text=f"最高: ¥{h_max:,.0f}<br>{d_max.strftime('%Y-%m-%d')}", showarrow=True, arrowhead=1, yshift=10)
+    fig.add_annotation(x=d_min, y=h_min, text=f"最低: ¥{h_min:,.0f}<br>{d_min.strftime('%Y-%m-%d')}", showarrow=True, arrowhead=1, yshift=-10)
+
+    fig.update_layout(template="plotly_dark", height=400, margin=dict(l=10, r=10, t=10, b=10), hovermode="x unified")
+    st.plotly_chart(fig, use_container_width=True)
+except:
+    st.warning("回测图表加载中，请稍候或刷新...")
 
 st.markdown("---")
 st.subheader("📋 持仓详情明细")
@@ -216,5 +251,4 @@ if price_cny_adj > 0:
         st.markdown(f"### 📢 建议指令：{action} **{abs(shares):,}** 股 {selected_label}")
         st.markdown(f"#### 预估金额: <span style='color:#ff4b4b'>¥{abs(shares * price_cny_adj):,.0f} CNY</span>", unsafe_allow_html=True)
 
-# 底部更新时间适配北京时间
 st.caption(f"🛡️ 终端状态：持久化激活 | 北京时间更新：{bj_now.strftime('%H:%M:%S')}")
