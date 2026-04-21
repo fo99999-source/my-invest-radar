@@ -36,26 +36,26 @@ def save_data(holdings, fx):
         json.dump(data, f)
 
 # ==========================================
-# 4. 数据获取引擎 (已集成新浪汇率)
+# 4. 数据获取引擎 (汇率逻辑优化)
 # ==========================================
 @st.cache_data(ttl=60)
-def get_live_market_data(config):
-    # 默认参考值
-    fx = {"USD": 7.24, "HKD": 0.92, "CNY": 1.0}
+def get_live_market_data(config, manual_fx):
+    # 默认值使用手动设置的值，作为保底
+    fx = {"USD": manual_fx["USD"], "HKD": manual_fx["HKD"], "CNY": 1.0}
     prices = {}
     
-    # 尝试抓取新浪实时汇率
+    # 尝试抓取新浪实时汇率 (第一优先级)
     try:
         header = {'Referer': 'http://finance.sina.com.cn'}
-        # 美元
         resp_u = requests.get("http://hq.sinajs.cn/list=fx_susdcny", timeout=2, headers=header).text
         data_u = resp_u.split('"')[1].split(',')
         if len(data_u) > 1: fx["USD"] = float(data_u[1])
-        # 港币
+        
         resp_h = requests.get("http://hq.sinajs.cn/list=fx_shkdcny", timeout=2, headers=header).text
         data_h = resp_h.split('"')[1].split(',')
         if len(data_h) > 1: fx["HKD"] = float(data_h[1])
     except:
+        # 抓取失败则保持 manual_fx 的值
         pass 
 
     for ticker, info in config.items():
@@ -91,28 +91,28 @@ with st.sidebar:
     st.header("⚙️ 配置管理")
     
     st.subheader("📦 持仓数量")
-    # 修改点：改为 text_input，支持小数，无加减号
-    input_c124 = st.text_input("513100.SS", value=str(st.session_state.saved_data["c124"]))
-    input_c216 = st.text_input("513300.SS", value=str(st.session_state.saved_data["c216"]))
-    input_c320 = st.text_input("2834.HK", value=str(st.session_state.saved_data["c320"]))
-    input_c274 = st.text_input("7266.HK", value=str(st.session_state.saved_data["c274"]))
-    input_c_tqqq = st.text_input("TQQQ", value=str(st.session_state.saved_data["c_tqqq"]))
+    # 股票数量改为 text_input，逻辑上后续会转为 int
+    input_c124 = st.text_input("513100.SS", value=str(int(st.session_state.saved_data["c124"])))
+    input_c216 = st.text_input("513300.SS", value=str(int(st.session_state.saved_data["c216"])))
+    input_c320 = st.text_input("2834.HK", value=str(int(st.session_state.saved_data["c320"])))
+    input_c274 = st.text_input("7266.HK", value=str(int(st.session_state.saved_data["c274"])))
+    input_c_tqqq = st.text_input("TQQQ", value=str(int(st.session_state.saved_data["c_tqqq"])))
     input_c_cash = st.text_input("现金储备 (CNY)", value=str(st.session_state.saved_data["c_cash"]))
     
     st.markdown("---")
-    st.subheader("💱 汇率干预")
+    st.subheader("💱 汇率覆盖 (保底用)")
     input_fx_usd = st.number_input("USD/CNY 覆盖", value=st.session_state.manual_fx["USD"], format="%.4f")
     input_fx_hkd = st.number_input("HKD/CNY 覆盖", value=st.session_state.manual_fx["HKD"], format="%.4f")
     
     if st.button("💾 永久保存修改", use_container_width=True, type="primary"):
         try:
-            # 修改点：保存时将字符串转为浮点数
+            # 股票持仓转为 int（不保留小数），现金保留 float
             new_holdings = {
-                "c124": float(input_c124), 
-                "c216": float(input_c216), 
-                "c320": float(input_c320),
-                "c274": float(input_c274), 
-                "c_tqqq": float(input_c_tqqq), 
+                "c124": int(float(input_c124)), 
+                "c216": int(float(input_c216)), 
+                "c320": int(float(input_c320)),
+                "c274": int(float(input_c274)), 
+                "c_tqqq": int(float(input_c_tqqq)), 
                 "c_cash": float(input_c_cash)
             }
             new_fx = {"USD": input_fx_usd, "HKD": input_fx_hkd}
@@ -123,7 +123,7 @@ with st.sidebar:
             time.sleep(0.5)
             st.rerun()
         except ValueError:
-            st.error("请输入有效的数字（支持小数）")
+            st.error("请输入有效的数字格式")
 
 # 持仓结构定义
 holdings_map = {
@@ -134,8 +134,8 @@ holdings_map = {
     "TQQQ":      {"name": "三倍纳指(美)",    "qty": st.session_state.saved_data["c_tqqq"], "lev": 3.0, "cur": "USD"}
 }
 
-_, live_prices = get_live_market_data(holdings_map)
-final_fx = {"USD": st.session_state.manual_fx["USD"], "HKD": st.session_state.manual_fx["HKD"], "CNY": 1.0}
+# 抓取逻辑：传入手动汇率作为 fallback
+final_fx, live_prices = get_live_market_data(holdings_map, st.session_state.manual_fx)
 
 # ==========================================
 # 7. 核心计算
@@ -148,18 +148,17 @@ for t, h in holdings_map.items():
 mkt_val_total = sum(lev_sums.values())
 cash_val = st.session_state.saved_data["c_cash"]
 total_assets = mkt_val_total + cash_val
-
 curr_beta = sum(live_prices[t] * h['qty'] * final_fx[h['cur']] * h['lev'] for t, h in holdings_map.items()) / total_assets if total_assets > 0 else 0
 
 # ==========================================
 # 8. UI 展现
 # ==========================================
 st.title("🛡️ 纳指平衡监控终端")
-st.info(f"📊 **当前应用汇率**: USD/CNY = **{final_fx['USD']:.4f}** | HKD/CNY = **{final_fx['HKD']:.4f}**")
+st.info(f"📊 **当前汇率状态**: USD/CNY = **{final_fx['USD']:.4f}** | HKD/CNY = **{final_fx['HKD']:.4f}** (优先实时，抓取失败则使用手动值)")
 
 m1, m2, m3 = st.columns(3)
 m1.metric("总资产 (CNY)", f"¥{total_assets:,.2f}")
-m2.metric("当前实时 Beta", f"{curr_beta:.2f}") # 已改为 2 位小数
+m2.metric("当前实时 Beta", f"{curr_beta:.2f}")
 m3.metric("曝险比例", f"{(mkt_val_total/total_assets*100):.1f}%")
 
 st.markdown("---")
@@ -176,7 +175,7 @@ df_list = []
 for t, h in holdings_map.items():
     v_cny = live_prices[t] * h['qty'] * final_fx[h['cur']]
     df_list.append({
-        "名称": h['name'], "代码": t, "持仓": f"{h['qty']:,}",
+        "名称": h['name'], "代码": t, "持仓": f"{int(h['qty']):,}",
         "实时单价": f"{live_prices[t]:.3f}", "市值(CNY)": f"{v_cny:,.0f}",
         "资产占比": f"{(v_cny/total_assets*100):.2f}%", "杠杆倍数": f"{h['lev']}x"
     })
@@ -205,4 +204,4 @@ if price_cny_adj > 0:
         st.markdown(f"### 📢 建议指令：{action} **{abs(shares):,}** 股 {selected_label}")
         st.markdown(f"#### 预估金额: <span style='color:#ff4b4b'>¥{abs(shares * price_cny_adj):,.2f} CNY</span>", unsafe_allow_html=True)
 
-st.caption(f"持久化激活 | 持仓支持小数输入 | 数据源: 新浪实时汇率 | 更新时间: {time.strftime('%H:%M:%S')}")
+st.caption(f"持久化激活 | 持仓整数化 | 汇率逻辑: 实时优先 > 手动保底 | 更新时间: {time.strftime('%H:%M:%S')}")
