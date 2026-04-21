@@ -205,7 +205,7 @@ try:
     d_max, d_min = history_series.idxmax(), history_series.idxmin()
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=history_series.index, y=history_series, name="总资产", line=dict(color='#00ffcc', width=2)))
+    fig.add_trace(go.Scatter(x=history_series.index, y=history_series, name="总资产", line=dict(color='#FF69B4', width=2)))
     
     # 标注最高最低
     fig.add_annotation(x=d_max, y=h_max, text=f"最高: ¥{h_max:,.0f}<br>{d_max.strftime('%Y-%m-%d')}", showarrow=True, arrowhead=1, yshift=10)
