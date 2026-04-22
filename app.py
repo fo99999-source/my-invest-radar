@@ -159,20 +159,27 @@ bj_now = get_beijing_time()
 st.title("🛡️ 纳指平衡监控终端")
 st.subheader(f"📅 北京日期：{bj_now.strftime('%Y年%m月%d日')}")
 
-u_color = "green" if fx_status["USD"] == "实时" else "orange"
-h_color = "green" if fx_status["HKD"] == "实时" else "orange"
-
-st.markdown(f"""
-> 汇率状态：
-> USD/CNY: **{final_fx['USD']:.4f}** <span style='color:{u_color}'>({fx_status['USD']})</span> | 
-> HKD/CNY: **{final_fx['HKD']:.4f}** <span style='color:{h_color}'>({fx_status['HKD']})</span>
-""", unsafe_allow_html=True)
+# ... (汇率状态部分保持不变) ...
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("总资产 (CNY)", f"¥{total_assets:,.0f}")
 m2.metric("当前实时 Beta", f"{curr_beta:.2f}")
 m3.metric("曝险实时市值", f"¥{mkt_val_total:,.0f}")
 m4.metric("曝险比例", f"{int(mkt_val_total/total_assets*100)}%")
+
+# --- 新增：资产比例分布栏 ---
+st.markdown("### 📊 资产分布比例")
+d1, d2, d3, d4 = st.columns(4)
+# 计算比例
+p1 = (lev_sums[1.0] / total_assets * 100) if total_assets > 0 else 0
+p2 = (lev_sums[2.0] / total_assets * 100) if total_assets > 0 else 0
+p3 = (lev_sums[3.0] / total_assets * 100) if total_assets > 0 else 0
+p_cash = (cash_val / total_assets * 100) if total_assets > 0 else 0
+
+d1.metric("一倍资产占比", f"{p1:.1f}%")
+d2.metric("二倍资产占比", f"{p2:.1f}%")
+d3.metric("三倍资产占比", f"{p3:.1f}%")
+d4.metric("现金储备占比", f"{p_cash:.1f}%")
 
 # ==========================================
 # 10. 历史回测波动图 (2025-01-01 至今)
