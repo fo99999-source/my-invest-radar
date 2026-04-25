@@ -23,7 +23,7 @@ def get_beijing_time():
 
 def load_data():
     default = {
-        "holdings": {"c124": 1174300, "c216": 21600, "c320": 600, "c274": 77600, "c_tqqq": 0, "c_cash": 3400000},
+        "holdings": {"c124": 1174300, "c216": 21600, "c320": 600, "c274": 77600, "c_tqqq": 0, "c_cash": 3250000},
         "fx": {"USD": 7.24, "HKD": 0.92}
     }
     if os.path.exists(DB_FILE):
